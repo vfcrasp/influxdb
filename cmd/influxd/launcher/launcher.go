@@ -9,11 +9,16 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"sync"
+	"testing"
 	"time"
 
+	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/control"
 	"github.com/influxdata/flux/execute"
+	"github.com/influxdata/flux/lang"
 	platform "github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/bolt"
 	"github.com/influxdata/influxdb/chronograf/server"
@@ -74,12 +79,14 @@ type Launcher struct {
 	natsServer *nats.Server
 
 	scheduler *taskbackend.TickScheduler
+	taskStore taskbackend.Store
 
 	logger *zap.Logger
 
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	apibackend *http.APIBackend
 }
 
 // NewLauncher returns a new instance of Launcher connected to standard in/out/err.
@@ -366,6 +373,7 @@ func (m *Launcher) run(ctx context.Context) (err error) {
 		lr := taskbackend.NewQueryLogReader(queryService)
 		taskSvc = task.PlatformAdapter(coordinator.New(m.logger.With(zap.String("service", "task-coordinator")), m.scheduler, boltStore), lr, m.scheduler)
 		taskSvc = task.NewValidator(taskSvc, bucketSvc)
+		m.taskStore = boltStore
 	}
 
 	// NATS streaming server
@@ -414,7 +422,7 @@ func (m *Launcher) run(ctx context.Context) (err error) {
 		Addr: m.httpBindAddress,
 	}
 
-	handlerConfig := &http.APIBackend{
+	m.apibackend = &http.APIBackend{
 		DeveloperMode:        m.developerMode,
 		Logger:               m.logger,
 		NewBucketService:     source.NewBucketService,
@@ -450,7 +458,7 @@ func (m *Launcher) run(ctx context.Context) (err error) {
 
 	// HTTP server
 	httpLogger := m.logger.With(zap.String("service", "http"))
-	platformHandler := http.NewPlatformHandler(handlerConfig)
+	platformHandler := http.NewPlatformHandler(m.apibackend)
 	reg.MustRegister(platformHandler.PrometheusCollectors()...)
 
 	h := http.NewHandlerFromRegistry("platform", reg)
@@ -483,4 +491,150 @@ func (m *Launcher) run(ctx context.Context) (err error) {
 	}(httpLogger)
 
 	return nil
+}
+
+// MustExecuteQuery executes the provided query panicking if an error is encountered.
+// Callers of MustExecuteQuery must call Done on the returned QueryResults.
+func (p *Launcher) MustExecuteQuery(orgID platform.ID, query string, auth *platform.Authorization) *QueryResults {
+	results, err := p.ExecuteQuery(orgID, query, auth)
+	if err != nil {
+		panic(err)
+	}
+	return results
+}
+
+// ExecuteQuery executes the provided query against the ith query node.
+// Callers of ExecuteQuery must call Done on the returned QueryResults.
+func (p *Launcher) ExecuteQuery(orgID platform.ID, q string, auth *platform.Authorization) (*QueryResults, error) {
+	fq, err := p.queryController.Query(context.Background(), &query.Request{
+		Authorization:  auth,
+		OrganizationID: orgID,
+		Compiler: lang.FluxCompiler{
+			Query: q,
+		}})
+	if err != nil {
+		return nil, err
+	}
+	if err = fq.Err(); err != nil {
+		return nil, fq.Err()
+	}
+	return &QueryResults{
+		Results: <-fq.Ready(),
+		Query:   fq,
+	}, nil
+	//.Query(orgID, query)
+}
+
+// QueryResults wraps a set of query results with some helper methods.
+type QueryResults struct {
+	Results map[string]flux.Result
+	Query   flux.Query
+}
+
+func (r *QueryResults) Done() {
+	r.Query.Done()
+}
+
+// First returns the first QueryResult. When there are not exactly 1 table First
+// will fail.
+func (r *QueryResults) First(t *testing.T) *QueryResult {
+	r.HasTableCount(t, 1)
+	for _, result := range r.Results {
+		return &QueryResult{t: t, q: result}
+	}
+	return nil
+}
+
+// HasTableCount asserts that there are n tables in the result.
+func (r *QueryResults) HasTableCount(t *testing.T, n int) {
+	if got, exp := len(r.Results), n; got != exp {
+		t.Fatalf("result has %d tables, expected %d. Tables: %s", got, exp, r.Names())
+	}
+}
+
+// Names returns the sorted set of table names for the query results.
+func (r *QueryResults) Names() []string {
+	if len(r.Results) == 0 {
+		return nil
+	}
+	names := make([]string, len(r.Results), 0)
+	for k := range r.Results {
+		names = append(names, k)
+	}
+	return names
+}
+
+// SortedNames returns the sorted set of table names for the query results.
+func (r *QueryResults) SortedNames() []string {
+	names := r.Names()
+	sort.Strings(names)
+	return names
+}
+
+// QueryResult wraps a single flux.Result with some helper methods.
+type QueryResult struct {
+	t *testing.T
+	q flux.Result
+}
+
+// HasTableWithCols checks if the desired number of tables and columns exist,
+// ignoring any system columns.
+//
+// If the result is not as expected then the testing.T fails.
+func (r *QueryResult) HasTablesWithCols(want []int) {
+	r.t.Helper()
+
+	// _start, _stop, _time, _f
+	systemCols := 4
+	got := []int{}
+	if err := r.q.Tables().Do(func(b flux.Table) error {
+		got = append(got, len(b.Cols())-systemCols)
+		b.Do(func(c flux.ColReader) error { return nil })
+		return nil
+	}); err != nil {
+		r.t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		r.t.Fatalf("got %v, expected %v", got, want)
+	}
+}
+
+// TablesN returns the number of tables for the result.
+func (r *QueryResult) TablesN() int {
+	var total int
+	r.q.Tables().Do(func(b flux.Table) error {
+		total++
+		b.Do(func(c flux.ColReader) error { return nil })
+		return nil
+	})
+	return total
+}
+
+func (m *Launcher) OrganizationService() platform.OrganizationService {
+	return m.apibackend.OrganizationService
+}
+
+func (m *Launcher) BucketService() platform.BucketService {
+	return m.apibackend.BucketService
+}
+
+func (m *Launcher) UserService() platform.UserService {
+	return m.apibackend.UserService
+}
+
+func (m *Launcher) AuthorizationService() platform.AuthorizationService {
+	return m.apibackend.AuthorizationService
+}
+
+func (m *Launcher) TaskService() platform.TaskService {
+	return m.apibackend.TaskService
+}
+
+func (m *Launcher) TaskStore() taskbackend.Store {
+	return m.taskStore
+}
+
+func (m *Launcher) TaskScheduler() taskbackend.Scheduler {
+	return m.scheduler
 }
