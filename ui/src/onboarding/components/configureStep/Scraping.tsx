@@ -91,6 +91,7 @@ export class Scraping extends PureComponent<Props> {
           showSkip={true}
           autoFocusNext={false}
           skipButtonText={'Skip'}
+          nextButtonText={'Finish'}
           nextButtonStatus={this.nextButtonStatus}
         />
       </Form>
