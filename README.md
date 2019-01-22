@@ -4,13 +4,38 @@ InfluxDB is an open source time series platform. This includes APIs for storing 
 
 If you are looking for the [InfluxDB 1.x Go Client, we've created a new repo](https://github.com/influxdata/influxdb1-client) for that. There will be a Go client for the 2.0 API coming very soon.
 
-## State Of the Project
+## State of the Project
 
-InfluxDB 1.7.3 is the current stable release and recommended for production use. InfluxDB 2.0 (what's in the master branch) is currently in the alpha stage. This means that it is not recommended for production usage. There may be breaking API changes, breaking changes in the [Flux language](https://github.com/influxdata/flux), changes in the underlying storage format that will require you to wipe out all your old data, and significant changes to the UI. We will be cutting weekly versioned releases every week starting in the first week of February. There will also be nightly builds.
+The latest InfluxDB 1.x is the stable release and recommended for production use. InfluxDB 2.0 (what's in the master branch) is currently in the alpha stage. This means that it is **not** recommended for production usage. There may be breaking API changes, breaking changes in the [Flux language](https://github.com/influxdata/flux), changes in the underlying storage format that will require you to delete all your data, and significant changes to the UI. The alpha is intended for feature exploration and gathering feedback on the available feature set. It **should not** be used for performance testing, benchmarks, or other stress tests.
 
-Once we close on the final feature set of what will be in the first release of InfluxDB in the 2.x line, we will move into the beta phase. At that point we won't be making breaking changes to the API or the Flux language. However, it will still not be recommended for production usage. During the beta period we will focus on bug fixes, performance, and additive features (where time permits).
+Additional features will arrive during the weekly alpha updates. We will be cutting versioned releases every week starting in the first week of February. There will also be nightly builds.
 
-Although InfluxDB 2.0 has an all new API and query language (Flux), it will have a compatability mode that can be turned on which will let users continue to write and query the database with InfluxQL (the SQL style language).
+Once we close on the final feature set of what will be in the first release of InfluxDB in the 2.x line, we will move into the beta phase. At that point, our intention is to avoid making breaking changes to the API or the Flux language. However, it still may be necessary to do so. We will do our best to keep this to an absolute minimum and clearly communicate ANY and ALL changes in this regard via the changelog.
+
+The beta will still not be recommended for production usage. During the beta period we will focus on bug fixes, performance, and additive features (where time permits).
+
+### What you can expect Alpha and Beta Phases
+
+#### Alpha
+**Weekly alpha releases with incremental feature additions and changes to the user interface**
+
+Planned additions include:
+- Initial alpha release only supports a single user through the UI and the permission assigned via the security token are "full access".  This restriction will be relaxed delivering the ability to define multiple users and change the access permissions provided via the token.
+- Compatibility layer with 1.x including: 1.x HTTP Write API  and HTTP Read API support for InfluxQL
+- Import Bulk Data from 1.x - convert TSM from 1.x to 2.x
+- Delete API w/ predicates for time (and other)
+
+#### Beta
+**Releases every 2 - 3 weeks or as needed**
+
+Planned activities include:
+- Performance tuning, stability improvements, and fine tuning based on community feedback.
+- Finalization of supported client libraries starting with JavaScript and Go.
+
+### What is **NOT** planned?
+- Migration of users/security permissions from InfluxDB v1.x to 2.x.  ACTION REQUIRED: Re-establish users and permissions within the new unified security model which now spans the underlying database and user interface.
+- Migration of Continuous Queries.  ACTION REQUIRED: These will need to be re-implemented as Flux tasks.
+- Direct support by InfluxDB for CollectD, StatsD, Graphite, or UDP.  ACTION REQUIRED: Leverage Telegraf 1.9+ along with the InfluxDB v2.0 output plugin to translate these protocols/formats.
 
 ## Installation
 
@@ -149,7 +174,7 @@ Generally, code must be adjusted to satisfy these tools, though there are except
  - [go mod tidy](https://tip.golang.org/cmd/go/#hdr-Add_missing_and_remove_unused_modules) ensures that the source code and go.mod agree.
  - [staticcheck](http://next.staticcheck.io/docs/) checks for things like: unused code, code that can be simplified, code that is incorrect and code that will have performance issues.
 
-### staticcheck 
+### staticcheck
 
 If your PR fails `staticcheck` it is easy to dig into why it failed, and also to fix the problem.
 First, take a look at the error message in Circle under the `staticcheck` build section, e.g.,
@@ -160,18 +185,17 @@ tsdb/tsm1/encoding.go:172:7: receiver name should not be an underscore, omit the
 ```
 
 Next, go and take a [look here](http://next.staticcheck.io/docs/checks) for some clarification on the error code that you have received, e.g., `U1000`.
-The docs will tell you what's wrong, and often what you need to do to fix the issue. 
+The docs will tell you what's wrong, and often what you need to do to fix the issue.
 
 #### Generated Code
 
 Sometimes generated code will contain unused code or occasionally that will fail a different check.
 `staticcheck` allows for [entire files](http://next.staticcheck.io/docs/#ignoring-problems) to be ignored, though it's not ideal.
 A linter directive, in the form of a comment, must be placed within the generated file.
-This is problematic because it will be erased if the file is re-generated. 
+This is problematic because it will be erased if the file is re-generated.
 Until a better solution comes about, below is the list of generated files that need an ignores comment.
 If you re-generate a file and find that `staticcheck` has failed, please see this list below for what you need to put back:
 
 | File  | Comment  |
 |:-:|:-:|
 | query/promql/promql.go  | //lint:file-ignore SA6001 Ignore all unused code, it's generated  |
-
